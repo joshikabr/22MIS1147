@@ -84,49 +84,53 @@ class MinHeap {
 
 const AFFORDMED_API = 'http://4.224.186.213/evaluation-service/notifications';
 
-app.get('/api/v1/priority-inbox', async (req: Request, res: Response) => {
+async function fetchFromAPI(type?: string): Promise<Notification[]> {
     const token = process.env.AFFORDMED_TOKEN || '';
+    const url = type ? `${AFFORDMED_API}?notification_type=${type}` : AFFORDMED_API;
+    const res = await axios.get(url, { headers: { Authorization: `Bearer ${token}` } });
+    return res.data.notifications || [];
+}
 
+app.get('/api/v1/priority-inbox', async (req: Request, res: Response) => {
     try {
-        Log('backend', 'info', 'route', 'Incoming request: GET /api/v1/priority-inbox');
+        Log('backend', 'info', 'route', 'GET /api/v1/priority-inbox');
+
+        const notifications = await fetchFromAPI();
+        Log('backend', 'info', 'service', `Fetched ${notifications.length} items`);
 
         const heap = new MinHeap(10);
-        let notifications: Notification[] = [];
-
-        try {
-            const apiRes = await axios.get(AFFORDMED_API, {
-                headers: { 'Authorization': `Bearer ${token}` }
-            });
-            notifications = apiRes.data.notifications || [];
-            Log('backend', 'info', 'service', `Fetched ${notifications.length} notifications`);
-        } catch (err: any) {
-            Log('backend', 'warn', 'service', `Failed to fetch notifications: ${err.message}`);
-        }
-
-        for (const notif of notifications) {
-            heap.push(notif);
-        }
+        for (const n of notifications) heap.push(n);
 
         res.status(200).json({ priority_notifications: heap.getSorted() });
     } catch (error: any) {
-        Log('backend', 'error', 'handler', `Error in priority-inbox: ${error.message}`);
+        Log('backend', 'error', 'handler', 'priority-inbox failed');
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
 
 app.get('/api/v1/notifications', async (req: Request, res: Response) => {
-    const token = process.env.AFFORDMED_TOKEN || '';
     try {
-        Log('backend', 'info', 'route', 'Incoming request: GET /api/v1/notifications');
+        Log('backend', 'info', 'route', 'GET /api/v1/notifications');
 
-        const { limit = 10, page = 1, notification_type } = req.query;
-        let url = `${AFFORDMED_API}?limit=${limit}&page=${page}`;
-        if (notification_type) url += `&notification_type=${notification_type}`;
+        const limit = parseInt(req.query.limit as string) || 10;
+        const page = parseInt(req.query.page as string) || 1;
+        const notification_type = req.query.notification_type as string | undefined;
 
-        const apiRes = await axios.get(url, { headers: { 'Authorization': `Bearer ${token}` } });
-        res.status(200).json(apiRes.data);
+        // Affordmed API doesn't support limit/page — fetch and paginate ourselves
+        const all = await fetchFromAPI(notification_type);
+
+        const start = (page - 1) * limit;
+        const paginated = all.slice(start, start + limit);
+        const total_pages = Math.ceil(all.length / limit);
+
+        Log('backend', 'info', 'service', `Returning page ${page}/${total_pages}`);
+
+        res.status(200).json({
+            notifications: paginated,
+            pagination: { current_page: page, total_pages, total: all.length }
+        });
     } catch (error: any) {
-        Log('backend', 'error', 'handler', `Error fetching notifications: ${error.message}`);
+        Log('backend', 'error', 'handler', 'notifications fetch failed');
         res.status(500).json({ error: 'Internal Server Error' });
     }
 });
